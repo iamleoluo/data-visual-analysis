@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NeRF Dataset 3D Viewer</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; display: flex; height: 100vh; overflow: hidden; }
+
+  /* Left panel */
+  #left-panel { width: 220px; background: #16213e; padding: 16px; display: flex; flex-direction: column; gap: 12px; border-right: 1px solid #0f3460; flex-shrink: 0; }
+  #left-panel h2 { font-size: 14px; color: #e94560; text-transform: uppercase; letter-spacing: 1px; }
+  #left-panel select { width: 100%; padding: 8px; background: #0f3460; color: #e0e0e0; border: 1px solid #533483; border-radius: 4px; font-size: 13px; }
+  #left-panel label { font-size: 12px; color: #aaa; }
+  #camera-count { font-size: 12px; color: #888; }
+  .legend { font-size: 11px; margin-top: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  #split-filters { display: flex; flex-direction: column; gap: 4px; }
+  #split-filters label { font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+
+  /* Verify buttons */
+  .btn { width: 100%; padding: 8px; border: none; border-radius: 4px; font-size: 12px; font-weight: 600; cursor: pointer; text-transform: uppercase; letter-spacing: 0.5px; }
+  .btn-verify { background: #e94560; color: #fff; }
+  .btn-verify:hover { background: #ff6b81; }
+  .btn-verify:disabled { background: #555; cursor: not-allowed; }
+  .btn-reset { background: #0f3460; color: #aaa; border: 1px solid #533483; margin-top: 4px; }
+  .btn-reset:hover { background: #1a4a7a; color: #fff; }
+  #verify-status { font-size: 11px; color: #888; margin-top: 4px; min-height: 14px; }
+  #verify-summary { font-size: 11px; margin-top: 6px; display: none; }
+  #verify-summary span { padding: 1px 6px; border-radius: 3px; margin-right: 4px; font-weight: 600; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .btn-verify.loading { animation: pulse 1.5s ease-in-out infinite; background: #b83550; }
+
+  /* Verification info in right panel */
+  #verify-info { padding: 12px 16px; font-size: 12px; border-top: 1px solid #0f3460; }
+  #verify-info .grade-badge { display: inline-block; padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 11px; text-transform: uppercase; }
+  #verify-info .grade-good { background: #00c853; color: #000; }
+  #verify-info .grade-warning { background: #ffd600; color: #000; }
+  #verify-info .grade-bad { background: #ff1744; color: #fff; }
+  #verify-info .grade-unknown { background: #666; color: #fff; }
+  #verify-info .grade-unverified { background: #444; color: #999; }
+  #verify-info .pair-list { margin-top: 8px; font-size: 11px; color: #aaa; }
+  #verify-info .pair-item { margin: 3px 0; }
+
+  /* 3D viewport */
+  #viewport { flex: 1; position: relative; }
+  #viewport canvas { display: block; }
+  #tooltip { position: absolute; background: rgba(15, 52, 96, 0.9); color: #fff; padding: 4px 10px; border-radius: 4px; font-size: 12px; pointer-events: none; display: none; white-space: nowrap; }
+  #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 14px; color: #888; display: none; }
+
+  /* Right panel */
+  #right-panel { width: 340px; background: #16213e; border-left: 1px solid #0f3460; display: flex; flex-direction: column; flex-shrink: 0; }
+  #right-panel h3 { font-size: 13px; padding: 12px 16px; color: #e94560; border-bottom: 1px solid #0f3460; }
+  #preview-area { flex: 1; display: flex; flex-direction: column; overflow-y: auto; }
+  #preview-img { width: 100%; background: #000; display: none; }
+  #preview-placeholder { padding: 40px 16px; text-align: center; color: #555; font-size: 13px; }
+  #pose-info { padding: 12px 16px; font-size: 11px; font-family: 'SF Mono', 'Fira Code', monospace; color: #aaa; white-space: pre-wrap; word-break: break-all; border-top: 1px solid #0f3460; max-height: 240px; overflow-y: auto; }
+</style>
+</head>
+<body>
+
+<!-- Left Panel -->
+<div id="left-panel">
+  <h2>NeRF Viewer</h2>
+  <div>
+    <label>Dataset</label>
+    <select id="dataset-select"><option value="">-- Loading... --</option></select>
+  </div>
+  <div id="camera-count"></div>
+  <div id="split-filters"></div>
+  <div class="legend" id="legend-splits">
+    <div class="legend-item"><span class="legend-dot" style="background:#00e5ff"></span> train</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#00e676"></span> val</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#ff9100"></span> test</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#ff4081"></span> all</div>
+  </div>
+  <div>
+    <button class="btn btn-verify" id="btn-verify" disabled>Verify Poses</button>
+    <button class="btn btn-reset" id="btn-reset" style="display:none">Reset Colors</button>
+    <div id="verify-status"></div>
+    <div id="verify-summary"></div>
+  </div>
+  <div class="legend" id="legend-verify" style="display:none">
+    <div class="legend-item"><span class="legend-dot" style="background:#00c853"></span> good (&lt;2px)</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#ffd600"></span> warning (2-5px)</div>
+    <div class="legend-item"><span class="legend-dot" style="background:#ff1744"></span> bad (&gt;5px)</div>
+  </div>
+  <div style="margin-top:auto; font-size:11px; color:#555;">
+    Scroll to zoom<br>
+    Left-drag to rotate<br>
+    Right-drag to pan<br>
+    Click point to preview
+  </div>
+</div>
+
+<!-- 3D Viewport -->
+<div id="viewport">
+  <div id="tooltip"></div>
+  <div id="loading">Loading dataset...</div>
+</div>
+
+<!-- Right Panel -->
+<div id="right-panel">
+  <h3>Image Preview</h3>
+  <div id="preview-area">
+    <img id="preview-img">
+    <div id="preview-placeholder">Click a camera point in the 3D view to preview its image.</div>
+  </div>
+  <div id="verify-info"></div>
+  <div id="pose-info"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ── State ──
+let cameras = [];
+let spheres = [];         // Three.js meshes for each camera
+let directionLines = [];  // direction indicator lines
+let currentDatasetPath = '';
+let selectedSphere = null;
+let hoveredSphere = null;
+let activeSplits = new Set(['train', 'val', 'test', 'all']);
+let verifyResults = null;  // per-camera verification results
+let verifyMode = false;
+
+const SPLIT_COLORS = { train: 0x00e5ff, val: 0x00e676, test: 0xff9100, all: 0xff4081 };
+const GRADE_COLORS = { good: 0x00c853, warning: 0xffd600, bad: 0xff1744, unknown: 0x666666, unverified: 0x444444 };
+const HIGHLIGHT_COLOR = 0xffff00;
+const SELECTED_COLOR = 0xffffff;
+
+// ── Three.js setup ──
+const viewport = document.getElementById('viewport');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x111122);
+viewport.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 1000);
+camera.position.set(3, 3, 3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.1;
+
+// Lights
+scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+dirLight.position.set(5, 10, 5);
+scene.add(dirLight);
+
+// Axes helper
+scene.add(new THREE.AxesHelper(1));
+
+// Grid
+const grid = new THREE.GridHelper(10, 20, 0x222244, 0x191933);
+scene.add(grid);
+
+// Raycaster
+const raycaster = new THREE.Raycaster();
+const mouse = new THREE.Vector2();
+
+// ── Resize ──
+function resize() {
+  const w = viewport.clientWidth, h = viewport.clientHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ── Animate ──
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ── UI refs ──
+const datasetSelect = document.getElementById('dataset-select');
+const cameraCount = document.getElementById('camera-count');
+const tooltip = document.getElementById('tooltip');
+const loading = document.getElementById('loading');
+const previewImg = document.getElementById('preview-img');
+const previewPlaceholder = document.getElementById('preview-placeholder');
+const poseInfo = document.getElementById('pose-info');
+const splitFilters = document.getElementById('split-filters');
+
+// ── Load dataset list ──
+async function loadDatasetList() {
+  const res = await fetch('/api/datasets');
+  const datasets = await res.json();
+  datasetSelect.innerHTML = '<option value="">-- Select Dataset --</option>';
+  datasets.forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d.path;
+    opt.textContent = d.name;
+    datasetSelect.appendChild(opt);
+  });
+}
+loadDatasetList();
+
+datasetSelect.addEventListener('change', () => {
+  if (datasetSelect.value) loadDataset(datasetSelect.value);
+});
+
+// ── Load a dataset ──
+async function loadDataset(path) {
+  currentDatasetPath = path;
+  loading.style.display = 'block';
+  clearScene();
+  clearPreview();
+
+  const res = await fetch(`/api/dataset/${encodeURIComponent(path)}`);
+  const data = await res.json();
+  cameras = data.cameras || [];
+  cameraCount.textContent = `${cameras.length} cameras`;
+
+  // Build split filter checkboxes
+  const splits = [...new Set(cameras.map(c => c.split))];
+  activeSplits = new Set(splits);
+  splitFilters.innerHTML = '';
+  splits.forEach(s => {
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = true;
+    cb.addEventListener('change', () => {
+      if (cb.checked) activeSplits.add(s); else activeSplits.delete(s);
+      updateVisibility();
+    });
+    label.appendChild(cb);
+    label.appendChild(document.createTextNode(' ' + s));
+    splitFilters.appendChild(label);
+  });
+
+  buildCameraPoints();
+  fitCamera();
+  loading.style.display = 'none';
+  btnVerify.disabled = false;
+  btnReset.style.display = 'none';
+  verifyStatus.textContent = '';
+  document.getElementById('verify-summary').style.display = 'none';
+  verifyInfo.innerHTML = '';
+  legendSplits.style.display = 'block';
+  legendVerify.style.display = 'none';
+}
+
+// ── Build camera point meshes ──
+function buildCameraPoints() {
+  const geo = new THREE.SphereGeometry(0.08, 16, 16);
+
+  cameras.forEach((cam, i) => {
+    const color = SPLIT_COLORS[cam.split] || 0xff4081;
+    const mat = new THREE.MeshStandardMaterial({
+      color,
+      emissive: color,
+      emissiveIntensity: 0.7,
+    });
+    const sphere = new THREE.Mesh(geo, mat);
+    sphere.position.set(cam.position[0], cam.position[1], cam.position[2]);
+    sphere.userData = { index: i, baseColor: color };
+    scene.add(sphere);
+    spheres.push(sphere);
+
+    // Direction indicator line
+    const dir = new THREE.Vector3(cam.forward[0], cam.forward[1], cam.forward[2]).normalize();
+    const origin = sphere.position.clone();
+    const lineGeo = new THREE.BufferGeometry().setFromPoints([origin, origin.clone().add(dir.multiplyScalar(0.25))]);
+    const lineMat = new THREE.LineBasicMaterial({ color, linewidth: 2 });
+    const line = new THREE.Line(lineGeo, lineMat);
+    line.userData = { isHelper: true, index: i, baseColor: color };
+    scene.add(line);
+    directionLines.push(line);
+  });
+}
+
+// ── Fit camera to scene ──
+function fitCamera() {
+  if (spheres.length === 0) return;
+  const box = new THREE.Box3();
+  spheres.forEach(s => box.expandByPoint(s.position));
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(size * 0.8, size * 0.6, size * 0.8));
+  controls.update();
+}
+
+// ── Visibility by split ──
+function updateVisibility() {
+  spheres.forEach(s => {
+    const cam = cameras[s.userData.index];
+    s.visible = activeSplits.has(cam.split);
+  });
+}
+
+// ── Clear ──
+function clearScene() {
+  // Remove old camera spheres and helper lines
+  const toRemove = [];
+  scene.traverse(obj => {
+    if (obj.userData?.index !== undefined || obj.userData?.isHelper) toRemove.push(obj);
+  });
+  toRemove.forEach(o => { scene.remove(o); o.geometry?.dispose(); o.material?.dispose(); });
+  spheres = [];
+  directionLines = [];
+  selectedSphere = null;
+  hoveredSphere = null;
+  verifyResults = null;
+  verifyMode = false;
+}
+
+function clearPreview() {
+  previewImg.style.display = 'none';
+  previewPlaceholder.style.display = 'block';
+  poseInfo.textContent = '';
+  document.getElementById('verify-info').innerHTML = '';
+}
+
+// ── Mouse interaction ──
+function getIntersect(event) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+  mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  const visible = spheres.filter(s => s.visible);
+  return raycaster.intersectObjects(visible);
+}
+
+renderer.domElement.addEventListener('pointermove', (e) => {
+  const hits = getIntersect(e);
+  // Reset previous hover
+  if (hoveredSphere && hoveredSphere !== selectedSphere) {
+    hoveredSphere.material.color.setHex(hoveredSphere.userData.baseColor);
+    hoveredSphere.scale.setScalar(1);
+  }
+  if (hits.length > 0) {
+    hoveredSphere = hits[0].object;
+    if (hoveredSphere !== selectedSphere) {
+      hoveredSphere.material.color.setHex(HIGHLIGHT_COLOR);
+      hoveredSphere.scale.setScalar(1.5);
+    }
+    const cam = cameras[hoveredSphere.userData.index];
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX - viewport.getBoundingClientRect().left + 12) + 'px';
+    tooltip.style.top = (e.clientY - viewport.getBoundingClientRect().top - 20) + 'px';
+    tooltip.textContent = cam.image;
+    renderer.domElement.style.cursor = 'pointer';
+  } else {
+    hoveredSphere = null;
+    tooltip.style.display = 'none';
+    renderer.domElement.style.cursor = 'grab';
+  }
+});
+
+renderer.domElement.addEventListener('click', (e) => {
+  const hits = getIntersect(e);
+  // Reset previous selection
+  if (selectedSphere) {
+    selectedSphere.material.color.setHex(selectedSphere.userData.baseColor);
+    selectedSphere.scale.setScalar(1);
+  }
+  if (hits.length > 0) {
+    selectedSphere = hits[0].object;
+    selectedSphere.material.color.setHex(SELECTED_COLOR);
+    selectedSphere.scale.setScalar(1.8);
+    const cam = cameras[selectedSphere.userData.index];
+    showPreview(cam);
+  } else {
+    selectedSphere = null;
+    clearPreview();
+  }
+});
+
+// ── Show preview ──
+const verifyInfo = document.getElementById('verify-info');
+
+function showPreview(cam) {
+  const imgUrl = `/api/image/${encodeURIComponent(currentDatasetPath + '/' + cam.image)}`;
+  previewImg.src = imgUrl;
+  previewImg.style.display = 'block';
+  previewPlaceholder.style.display = 'none';
+
+  // Pose info
+  const mat = cam.matrix;
+  const lines = [
+    `Image: ${cam.image}`,
+    `Split: ${cam.split}`,
+    `Position: [${cam.position.map(v => v.toFixed(4)).join(', ')}]`,
+    '',
+    'Transform Matrix:',
+    ...mat.map(row => '  [' + row.map(v => (typeof v === 'number' ? v.toFixed(4) : v)).join(', ') + ']')
+  ];
+  poseInfo.textContent = lines.join('\n');
+
+  // Show verification info if available
+  showVerifyInfo(selectedSphere?.userData.index);
+}
+
+function showVerifyInfo(camIndex) {
+  if (!verifyResults || camIndex == null) {
+    verifyInfo.innerHTML = '';
+    return;
+  }
+  const r = verifyResults[camIndex];
+  if (!r) { verifyInfo.innerHTML = ''; return; }
+
+  const gradeClass = `grade-${r.grade}`;
+  let html = `<div style="margin-bottom:6px"><b>Epipolar Error:</b> ${r.error >= 0 ? r.error.toFixed(4) + ' px' : 'N/A'} <span class="grade-badge ${gradeClass}">${r.grade}</span></div>`;
+
+  if (r.pairs && r.pairs.length > 0) {
+    html += '<div class="pair-list"><b>Neighbor Pairs:</b>';
+    r.pairs.forEach(p => {
+      const img = cameras[p.neighbor]?.image || `cam ${p.neighbor}`;
+      html += `<div class="pair-item">&#8226; #${p.neighbor} (${img.split('/').pop()}) &mdash; ${p.error.toFixed(4)} px, ${p.matches} matches</div>`;
+    });
+    html += '</div>';
+  }
+  verifyInfo.innerHTML = html;
+}
+
+// ── Verify / Reset ──
+const btnVerify = document.getElementById('btn-verify');
+const btnReset = document.getElementById('btn-reset');
+const verifyStatus = document.getElementById('verify-status');
+const legendSplits = document.getElementById('legend-splits');
+const legendVerify = document.getElementById('legend-verify');
+
+const verifySummary = document.getElementById('verify-summary');
+
+btnVerify.addEventListener('click', async () => {
+  if (!currentDatasetPath) return;
+  btnVerify.disabled = true;
+  btnVerify.classList.add('loading');
+  btnVerify.textContent = 'Verifying...';
+  verifyStatus.textContent = 'Analyzing epipolar geometry (this may take a minute)...';
+  verifySummary.style.display = 'none';
+
+  const t0 = performance.now();
+  try {
+    const res = await fetch(`/api/verify/${currentDatasetPath}`);
+    if (!res.ok) {
+      const text = await res.text();
+      try { const j = JSON.parse(text); verifyStatus.textContent = `Error: ${j.error}`; }
+      catch { verifyStatus.textContent = `Error: ${res.status} ${res.statusText}`; }
+      btnVerify.disabled = false;
+      btnVerify.classList.remove('loading');
+      btnVerify.textContent = 'Verify Poses';
+      return;
+    }
+    const data = await res.json();
+    if (data.error) {
+      verifyStatus.textContent = `Error: ${data.error}`;
+      btnVerify.disabled = false;
+      btnVerify.classList.remove('loading');
+      btnVerify.textContent = 'Verify Poses';
+      return;
+    }
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+    verifyResults = data.results;
+    verifyMode = true;
+    applyVerifyColors();
+
+    // Count grades
+    const counts = {};
+    verifyResults.forEach(r => counts[r.grade] = (counts[r.grade] || 0) + 1);
+    const verified = verifyResults.filter(r => r.grade !== 'unverified').length;
+    verifyStatus.textContent = `${verified} cameras verified in ${elapsed}s`;
+
+    // Build summary chips
+    let summaryHtml = '';
+    if (counts.good) summaryHtml += `<span style="background:#00c853;color:#000">${counts.good} good</span>`;
+    if (counts.warning) summaryHtml += `<span style="background:#ffd600;color:#000">${counts.warning} warn</span>`;
+    if (counts.bad) summaryHtml += `<span style="background:#ff1744;color:#fff">${counts.bad} bad</span>`;
+    if (counts.unverified) summaryHtml += `<span style="background:#333;color:#888">${counts.unverified} skip</span>`;
+    verifySummary.innerHTML = summaryHtml;
+    verifySummary.style.display = 'block';
+
+    btnReset.style.display = 'block';
+    legendSplits.style.display = 'none';
+    legendVerify.style.display = 'block';
+
+    if (selectedSphere) showVerifyInfo(selectedSphere.userData.index);
+  } catch (e) {
+    verifyStatus.textContent = `Error: ${e.message}`;
+  }
+  btnVerify.disabled = false;
+  btnVerify.classList.remove('loading');
+  btnVerify.textContent = 'Verify Poses';
+});
+
+btnReset.addEventListener('click', () => {
+  verifyMode = false;
+  resetColors();
+  btnReset.style.display = 'none';
+  verifyStatus.textContent = '';
+  verifySummary.style.display = 'none';
+  verifyInfo.innerHTML = '';
+  legendSplits.style.display = 'block';
+  legendVerify.style.display = 'none';
+});
+
+function applyVerifyColors() {
+  spheres.forEach((s, i) => {
+    const r = verifyResults[i];
+    const color = r ? (GRADE_COLORS[r.grade] || 0x666666) : 0x666666;
+    s.userData.baseColor = color;
+    s.material.color.setHex(color);
+    s.material.emissive.setHex(color);
+  });
+  directionLines.forEach((line, i) => {
+    const r = verifyResults[i];
+    const color = r ? (GRADE_COLORS[r.grade] || 0x666666) : 0x666666;
+    line.userData.baseColor = color;
+    line.material.color.setHex(color);
+  });
+  // Re-apply selection highlight
+  if (selectedSphere) {
+    selectedSphere.material.color.setHex(SELECTED_COLOR);
+  }
+}
+
+function resetColors() {
+  spheres.forEach((s) => {
+    const cam = cameras[s.userData.index];
+    const color = SPLIT_COLORS[cam.split] || 0xff4081;
+    s.userData.baseColor = color;
+    s.material.color.setHex(color);
+    s.material.emissive.setHex(color);
+  });
+  directionLines.forEach((line) => {
+    const cam = cameras[line.userData.index];
+    const color = SPLIT_COLORS[cam.split] || 0xff4081;
+    line.userData.baseColor = color;
+    line.material.color.setHex(color);
+  });
+  if (selectedSphere) {
+    selectedSphere.material.color.setHex(SELECTED_COLOR);
+  }
+}
+
+</script>
+</body>
+</html>
